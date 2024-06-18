@@ -5,23 +5,29 @@ import time
 import numpy as np
 
 class Servo:
-    # Pulse width between 500us to 2500us
-    min_pulsewidth = 650
-    max_pulsewidth = 2650
+    # Pulse width between 650us to 2650us (manually found)
+    min_pulsewidth = 500
+    max_pulsewidth = 2500
+    offset = 150
 
     def __init__(self, pin_number):
         self.pin_number = pin_number
         self.pi = pigpio.pi()
+        self.angle = 0
         if not self.pi.connected:
             raise IOError("Failed to connect to pigpio daemon")
 
     def move(self, angle):
-        if angle < 0:
-            angle = 0
-        elif angle > 180:
-            angle = 180
-        print('Moving servo to', angle)
-        pulsewidth = Servo.min_pulsewidth + (angle / 180.0) * (Servo.max_pulsewidth - Servo.min_pulsewidth)
+        self.angle += angle
+        if self.angle < 0:
+            self.angle = 0
+        elif self.angle > 180:
+            self.angle = 180
+        print('Moving servo to', self.angle)        
+
+        pulsewidth = Servo.offset + Servo.min_pulsewidth + (self.angle / 180.0) * (Servo.max_pulsewidth - Servo.min_pulsewidth)
+        if pulsewidth > 2500:
+            pulsewidth = 2500
         self.pi.set_servo_pulsewidth(self.pin_number, pulsewidth)
 
     def stop(self):
@@ -53,19 +59,27 @@ class Camera:
             cv2.rectangle(self.frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
         cv2.imshow("Frame", self.frame)
 
-def move_servo(x, y):
-    if np.isnan(x) or np.isnan(y):
-        print("Invalid coordinates")
-        return
-    else:
-        err_x = (x - frame_width / 2) / frame_width
-        err_y = (frame_height / 2 - y) / frame_height
-    
-    Kpx = -60
+def servo_controller(x, y, x_prev, y_prev):
+    # Error calculation
+    err_x = (frame_width / 2 - x) / frame_width
+    err_y = (frame_height / 2 - y) / frame_height
+    derr_x = (x_prev - x) / frame_width
+    derr_y = (y_prev - y) / frame_height
+
+    # P gain
+    Kpx = 30
     Kpy = 30
 
-    servo1.move(90 + Kpx * err_x)
-    servo2.move(30 + Kpy * err_y)
+    # D gain
+    Kdx = 0
+    Kdy = 0
+
+    # PD control
+    MVx = Kpx * err_x + Kdx * derr_x / dt
+    MVy = Kpy * err_y + Kdy * derr_y / dt
+
+    servo1.move(MVx)
+    servo2.move(MVy)
 
 # Constants
 servo_pin_1 = 12  # GPIO 12
@@ -74,6 +88,7 @@ servo_pin_2 = 13  # GPIO 13
 frame_width = 640
 frame_height = 480
 frame_rate = 30
+dt = 0.1
 
 # main function
 if __name__ == '__main__':
@@ -90,6 +105,7 @@ if __name__ == '__main__':
     time.sleep(1)
 
     # Main loop
+    x_center_prev, y_center_prev = frame_width / 2, frame_height / 2
     while True:
         # Get the face coordinates
         faces = camera.get_face_coordinates()
@@ -108,9 +124,14 @@ if __name__ == '__main__':
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
+
+        if np.isnan(x_center) or np.isnan(y_center):
+            print("Invalid coordinates")
+        else:
+            servo_controller(x_center, y_center, x_center_prev, y_center_prev)
+            x_center_prev, y_center_prev = x_center, y_center
         
-        move_servo(x_center, y_center)
-        time.sleep(0.1)
+        time.sleep(dt)
     
     # Clean up
     servo1.stop()
