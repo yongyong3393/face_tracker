@@ -17,7 +17,7 @@ class Servo:
     max_pulsewidth = 2500
     offset = 150
 
-    def __init__(self, pin_number):
+    def __init__(self, pin_number, servo_num):
         self.pin_number = pin_number
         self.pi = pigpio.pi()
         if not self.pi.connected:
@@ -26,6 +26,7 @@ class Servo:
         self.running = False
         self.target_direction = None
         self.thread = None
+        self.servo_num = servo_num
 
     def move_continuous(self, direction):
         if not self.running:
@@ -38,7 +39,7 @@ class Servo:
     def _move_servo_continuous(self):
         while self.running:
             if self.target_direction == "increase":
-                if self.angle < 180:
+                if self.angle < 90 * (3 - self.servo_num):
                     self.angle += 1
             elif self.target_direction == "decrease":
                 if self.angle > 0:
@@ -50,6 +51,13 @@ class Servo:
             self.pi.set_servo_pulsewidth(self.pin_number, pulsewidth)
 
             time.sleep(0.03)
+            
+    def move_theta(self, theta):
+        self.angle = theta
+        pulsewidth = Servo.offset + Servo.min_pulsewidth + (self.angle / 180.0) * (Servo.max_pulsewidth - Servo.min_pulsewidth)
+        if pulsewidth > 2500:
+            pulsewidth = 2500
+        self.pi.set_servo_pulsewidth(self.pin_number, pulsewidth)
 
     def move(self, angle):
         self.angle += angle
@@ -131,12 +139,14 @@ frame_rate = 30
 dt = 0.1
 
 auto_toggle = True
+stop_flag = False
+
 
 # main function
 if __name__ == '__main__':
     # 1. Initialize & start servos
-    servo1 = Servo(servo_pin_1)
-    servo2 = Servo(servo_pin_2)
+    servo1 = Servo(servo_pin_1, 1)
+    servo2 = Servo(servo_pin_2, 2)
     time.sleep(2)
     servo1.move(90)
     servo2.move(45)
@@ -153,14 +163,17 @@ if __name__ == '__main__':
     # Main loop
     x_center_prev, y_center_prev = frame_width / 2, frame_height / 2
     def handle_irw():
-        global auto_toggle
-        while True:
+        global auto_toggle, stop_flag
+        while not stop_flag:
             output = process.stdout.readline()
             if output:
                 code = output.decode('utf-8').strip()
                 print(f"Received code: {code}")
                 if "KEY_0" in code:
                     auto_toggle = not auto_toggle
+                elif "KEY_9" in code:
+                    stop_flag = True
+                    break
                 if not auto_toggle:
                     if "KEY_2" in code:
                         servo2.move_continuous("increase")
@@ -178,8 +191,17 @@ if __name__ == '__main__':
     irw_thread = threading.Thread(target=handle_irw)
     irw_thread.start()
     
+    # pigpio 초기화
+    pi = pigpio.pi()
+    if not pi.connected:
+        raise IOError("Failed to connect to pigpio daemon")
+
+    # LED 핀 설정
+    LED_PIN = 25
+    pi.set_mode(LED_PIN, pigpio.OUTPUT)
+
     try:
-        while True:
+        while not stop_flag:
             # face detection and display
             faces = camera.get_face_coordinates()
             camera.draw_faces()
@@ -199,21 +221,30 @@ if __name__ == '__main__':
                 x_center_prev, y_center_prev = x_center, y_center
                 
             # Auto mode
-            if auto_toggle:
-                if np.isnan(x_center) or np.isnan(y_center):
+            
+            if np.isnan(x_center) or np.isnan(y_center):
                     print("Invalid coordinates")
-                else:
+                    pi.write(LED_PIN, 0)  # LED 끄기
+                    
+            else:
+                pi.write(LED_PIN, 1)
+                if auto_toggle:
                     servo_controller_auto(x_center, y_center, x_center_prev, y_center_prev)
+                    
             
             time.sleep(dt)
     except KeyboardInterrupt:
         print("Program interrupted by user.")
+        stop_flag = True
     finally:
+        servo1.move_theta(90)
+        servo2.move_theta(45)
         process.terminate()
         camera.stop()
         cv2.destroyAllWindows()
         servo1.stop()
         servo2.stop()
         irw_thread.join()
+        pi.write(LED_PIN, 0)  # 프로그램 종료 시 LED 끄기
+        pi.stop()  # pigpio 종료
         print("Resources released.")
-
